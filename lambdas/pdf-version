@@ -1,0 +1,65 @@
+import Responses from './API_Responses';
+import * as fileType from 'file-type';
+import { v4 as uuid } from 'uuid';
+import * as AWS from 'aws-sdk';
+
+const s3 = new AWS.S3();
+
+const allowedMimes = ['application/pdf'];
+
+exports.handler = async event => {
+    try {
+        const body = JSON.parse(event.body);
+
+        if (!body || !body.pdf) {
+            return Responses._400({ message: 'incorrect body on request' });
+        }
+
+        // convert the JSON to base64 using the jsonToBase64 function
+        const pdfData = jsonToBase64(body.pdf);
+
+        // check the mime type of the base64 data
+        const mime = pdfData.substr(0, pdfData.indexOf(';'));
+        if (!mime.startsWith('data:')) {
+            return Responses._400({ message: 'invalid base64 data' });
+        }
+        const mimeValue = mime.substr(5);
+        if (!allowedMimes.includes(mimeValue)) {
+            return Responses._400({ message: 'mime is not allowed ' });
+        }
+
+        // remove the mime prefix and convert the base64 data to a buffer
+        const buffer = Buffer.from(pdfData.substr(mime.length + 1), 'base64');
+        const fileInfo = await fileType.fromBuffer(buffer);
+        const detectedExt = fileInfo.ext;
+        const detectedMime = fileInfo.mime;
+
+        if (detectedMime !== mimeValue) {
+            return Responses._400({ message: 'mime types dont match' });
+        }
+
+        const name = uuid();
+        const key = `${name}.${detectedExt}`;
+
+        console.log(`writing pdf to bucket called ${key}`);
+
+        await s3
+            .putObject({
+                Body: buffer,
+                Key: key,
+                ContentType: mimeValue,
+                Bucket: process.env.pdfUploadBucket,
+                ACL: 'public-read',
+            })
+            .promise();
+
+        const url = `https://${process.env.pdfUploadBucket}.s3-${process.env.region}.amazonaws.com/${key}`;
+        return Responses._200({
+            pdfURL: url,
+        });
+    } catch (error) {
+        console.log('error', error);
+
+        return Responses._400({ message: error.message || 'failed to upload pdf' });
+    }
+};
